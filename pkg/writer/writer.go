@@ -1,30 +1,20 @@
 package writer
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"tfsplit/pkg/terraform"
+
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
+	"golang.org/x/exp/maps"
 )
 
-const (
-	IMPORT_FILENAME = "tfsplit_imports.tf"
-	HCL_IMPORT      = `variable "tfsplit_imports" {
-  type 			= map(string)
-  description 	= "Resources to import"
-  default 		= {}
-}
-
-import {
-  for_each = var.tfsplit_imports
-
-  to = each.key
-  id = each.value
-}
-`
-)
-
-func WriteLayer(path string, nodes []string, hcl map[string]map[string]string) {
+func WriteLayer(path string, nodes []string, hcl map[string]map[string]string, layerName string) {
 	slog.Debug(
 		"WriteLayer",
 		"path", path,
@@ -32,16 +22,18 @@ func WriteLayer(path string, nodes []string, hcl map[string]map[string]string) {
 		"hcl", hcl,
 	)
 
+	basePath := filepath.Join(path, "tfsplit", layerName)
+
 	// If directory already exists, return
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
+	if _, err := os.Stat(basePath); !os.IsNotExist(err) {
 		slog.Info(
 			"Directory already exist, assuming the layer is already written. Skipping.",
-			"path", path,
+			"path", basePath,
 		)
 		return
 	}
 
-	err := os.MkdirAll(path, os.ModePerm)
+	err := os.MkdirAll(basePath, os.ModePerm)
 
 	if err != nil {
 		panic(err)
@@ -74,16 +66,116 @@ func WriteLayer(path string, nodes []string, hcl map[string]map[string]string) {
 			name, _ := strings.CutPrefix(node, "output.")
 			outputs.WriteString(hcl["outputs"][name] + "\n")
 		}
+		/* Don't handle providers for now, alias make it difficult
 		if strings.HasPrefix(node, "provider") {
 			name, _ := strings.CutPrefix(node, "provider.")
 			providers.WriteString(hcl["providers"][name] + "\n")
 		}
+		*/
 	}
 
-	os.WriteFile(filepath.Join(path, "main.tf"), []byte(main.String()), 0644)
-	os.WriteFile(filepath.Join(path, "data.tf"), []byte(data.String()), 0644)
-	os.WriteFile(filepath.Join(path, "variables.tf"), []byte(variables.String()), 0644)
-	os.WriteFile(filepath.Join(path, "outputs.tf"), []byte(outputs.String()), 0644)
-	os.WriteFile(filepath.Join(path, "providers.tf"), []byte(providers.String()), 0644)
-	os.WriteFile(filepath.Join(path, IMPORT_FILENAME), []byte(HCL_IMPORT), 0644)
+	providers.WriteString(strings.Join(maps.Values(hcl["providers"]), "/n"))
+
+	if main.Len() != 0 {
+		os.WriteFile(filepath.Join(basePath, "main.tf"), []byte(main.String()), 0644)
+	}
+	if data.Len() != 0 {
+		os.WriteFile(filepath.Join(basePath, "data.tf"), []byte(data.String()), 0644)
+	}
+	if variables.Len() != 0 {
+		os.WriteFile(filepath.Join(basePath, "variables.tf"), []byte(variables.String()), 0644)
+	}
+	if outputs.Len() != 0 {
+		os.WriteFile(filepath.Join(basePath, "outputs.tf"), []byte(outputs.String()), 0644)
+	}
+	if providers.Len() != 0 {
+		os.WriteFile(filepath.Join(basePath, "providers.tf"), []byte(providers.String()), 0644)
+	}
+
+	os.WriteFile(filepath.Join(basePath, "terraform.tf"), []byte(hcl["terraform"]["root"]), 0644)
+}
+
+func WriteVars(path string, fileName string, nodes []string, imports map[string]string, layerName string) {
+	vars, err := terraform.ReadTfvars(filepath.Join(path, fileName))
+	if err != nil {
+		panic(fmt.Errorf("Failed to read var file: %s", err))
+	}
+
+	slog.Debug(
+		"WriteVars",
+		"path", path,
+		"filename", fileName,
+		"nodes", nodes,
+		"vars", vars,
+	)
+
+	f := hclwrite.NewEmptyFile()
+	rootBody := f.Body()
+
+	// Build variables files with required variables value
+	for _, node := range nodes {
+		if strings.HasPrefix(node, "var.") {
+			name, _ := strings.CutPrefix(node, "var.")
+			rootBody.SetAttributeValue(name, vars[name])
+		}
+	}
+
+	// Build imports map
+	importNeeded := make(map[string]bool)
+	for _, node := range nodes {
+		if strings.HasPrefix(node, "resource.") || strings.HasPrefix(node, "module.") {
+			importNeeded[node] = true
+		}
+	}
+
+	// Get only the imports needed
+	mImports := make(map[string]cty.Value)
+	for k, v := range imports {
+		slog.Debug(
+			"Filter imports",
+			"key", k,
+		)
+		sp := strings.Split(k, ".")
+		t := sp[0]
+		n := strings.Split(sp[1], "[")[0]
+		if !importNeeded[t+"."+n] {
+			continue
+		}
+		mImports[k] = cty.StringVal(v)
+	}
+
+	varsPath := filepath.Join(path, "tfsplit", layerName, fileName)
+	dir := filepath.Dir(varsPath)
+
+	os.MkdirAll(dir, os.ModePerm)
+
+	err = os.WriteFile(varsPath, f.Bytes(), 0644)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func WriteBackendConfig(path string, fileName string, layerName string) {
+	backend, err := terraform.ReadTfvars(filepath.Join(path, fileName))
+	if err != nil {
+		panic(fmt.Errorf("Failed to read backend config file: %s", err))
+	}
+
+	f := hclwrite.NewEmptyFile()
+	rootBody := f.Body()
+
+	backend["key"] = cty.StringVal(fmt.Sprintf("%s/%s", layerName, backend["key"].AsString()))
+	for k, v := range backend {
+		rootBody.SetAttributeValue(k, v)
+	}
+
+	varsPath := filepath.Join(path, "tfsplit", layerName, fileName)
+	dir := filepath.Dir(varsPath)
+
+	os.MkdirAll(dir, os.ModePerm)
+
+	err = os.WriteFile(varsPath, f.Bytes(), 0644)
+	if err != nil {
+		panic(err)
+	}
 }

@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	KEYS = [6]string{"resources", "data", "modules", "outputs", "variables", "providers"}
+	KEYS = [7]string{"resources", "data", "modules", "outputs", "variables", "providers", "terraform"}
 )
 
 func providerParser(path string) map[string]string {
@@ -37,6 +37,28 @@ func providerParser(path string) map[string]string {
 		}
 	}
 	return res
+}
+
+func terraformParser(path string) string {
+	m, err := filepath.Glob(path + "/*.tf")
+
+	if err != nil {
+		panic(err)
+	}
+
+	var res strings.Builder
+
+	for _, file := range m {
+		dat, _ := os.ReadFile(file)
+		lines := strings.Split(string(dat), "\n")
+
+		for i, line := range lines {
+			if strings.HasPrefix(line, "terraform") {
+				res.WriteString(customParser(file, i+1) + "\n")
+			}
+		}
+	}
+	return res.String()
 }
 
 func OpenTerraformFiles(path string) *tfconfig.Module {
@@ -72,6 +94,7 @@ func FromConfig(module *tfconfig.Module) map[string]map[string]string {
 	for _, item := range providerParser(module.Path) {
 		hclCode["providers"][item] = item
 	}
+	hclCode["terraform"]["root"] = terraformParser(module.Path)
 	return hclCode
 }
 

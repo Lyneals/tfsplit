@@ -6,7 +6,6 @@ import (
 	"log"
 	"log/slog"
 	"os"
-	"path/filepath"
 
 	"tfsplit/pkg/config"
 	"tfsplit/pkg/extractor"
@@ -43,6 +42,19 @@ func main() {
 				Value:    "./",
 				Required: true,
 			},
+			&cli.StringFlag{
+				Name:  "backend-config",
+				Usage: "Terraform init backend config",
+			},
+			&cli.StringFlag{
+				Name:  "var-file",
+				Usage: "Terraform plan var-file",
+			},
+			&cli.BoolFlag{
+				Name:  "import",
+				Usage: "Should we import resources to the new state ?",
+				Value: bool(true),
+			},
 		},
 		Name:   "tfsplit",
 		Usage:  "Read the Terraform module and split it into smaller layers based on the dependencies between the resources",
@@ -69,8 +81,11 @@ func appHandler(c *cli.Context) error {
 		"config", config,
 	)
 
-	tf_path := c.String("path")
-	tfGraph, err := terraform.GetGraph(ctx, tf_path, "terraform")
+	tfPath := c.String("path")
+	backendConfig := c.String("backend-config")
+	varFile := c.String("var-file")
+
+	tfGraph, err := terraform.GetGraph(ctx, tfPath, "terraform", backendConfig)
 	if err != nil {
 		return fmt.Errorf("Failed to get graph: %s", err)
 	}
@@ -80,16 +95,26 @@ func appHandler(c *cli.Context) error {
 		return fmt.Errorf("Failed to load graph: %s", err)
 	}
 
-	module := terraform.OpenTerraformFiles(tf_path)
+	module := terraform.OpenTerraformFiles(tfPath)
 	hclCode := terraform.FromConfig(module)
 
-	state, err := terraform.GetState(ctx, tf_path, "terraform")
+	state, err := terraform.GetState(ctx, tfPath, "terraform")
 	if err != nil {
 		return fmt.Errorf("Failed to get state: %s", err)
 	}
 
+	// Build rootNodes list
+	var rootNodes []string
 	for _, layer := range config.Layers {
-		childs := graph.GetChildren(layer.RootNode, gograph)
+		rootNodes = append(rootNodes, layer.RootNode)
+	}
+
+	// For each layer, get the children of the root node
+	// extract the ids of the resources
+	// write the layer
+	// write the vars
+	for _, layer := range config.Layers {
+		childs := graph.GetChildren(layer.RootNode, gograph, rootNodes)
 		ids := extractor.GetIds(layer.RootNode, state)
 
 		slog.Debug(
@@ -99,7 +124,14 @@ func appHandler(c *cli.Context) error {
 			"ids", ids,
 		)
 
-		writer.WriteLayer(filepath.Join(tf_path, "tfsplit", layer.Name), childs, hclCode)
+		writer.WriteLayer(tfPath, childs, hclCode, layer.Name)
+
+		if varFile != "" {
+			writer.WriteVars(tfPath, varFile, childs, ids, layer.Name)
+		}
+		if backendConfig != "" {
+			writer.WriteBackendConfig(tfPath, backendConfig, layer.Name)
+		}
 	}
 
 	return nil

@@ -20,7 +20,15 @@ func GetChildrenHelper(node string, graph *gographviz.Graph, visited map[string]
 	return children
 }
 
-func GetChildren(node string, graph *gographviz.Graph) []string {
+func GetChildren(node string, graph *gographviz.Graph, rootNodes []string) []string {
 	visited := make(map[string]bool)
+	// Mark root nodes as visited
+	// Necessary this will avoid discovering node that belong to another layer
+	for _, n := range rootNodes {
+		if n == node {
+			continue
+		}
+		visited[n] = true
+	}
 	return GetChildrenHelper(node, graph, visited)
 }
