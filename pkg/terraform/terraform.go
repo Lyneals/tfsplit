@@ -5,113 +5,127 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
-	"github.com/hashicorp/terraform-config-inspect/tfconfig"
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
 )
 
-var (
-	KEYS = [7]string{"resource", "data", "module", "output", "var", "provider", "terraform"}
-)
-
-func providerParser(path string) map[string]string {
-	m, err := filepath.Glob(path + "/*.tf")
-
-	if err != nil {
-		panic(err)
-	}
-
-	res := make(map[string]string)
-
-	for _, file := range m {
-		dat, _ := os.ReadFile(file)
-		lines := strings.Split(string(dat), "\n")
-
-		for i, line := range lines {
-			if strings.HasPrefix(line, "provider") {
-				name := strings.Split(line, " ")[1]
-				unq, _ := strconv.Unquote(name)
-				res[unq] = customParser(file, i+1)
-			}
+// Why the fuck do I even need this
+func getClosingBrace(start int, f []byte) int {
+	count := 0
+	for i := start; i < len(f); i++ {
+		switch f[i] {
+		case '{':
+			count++
+		case '}':
+			count--
+		}
+		if count == 0 && f[i] == '}' {
+			return i
 		}
 	}
-	return res
+
+	return start
 }
 
-func terraformParser(path string) string {
-	m, err := filepath.Glob(path + "/*.tf")
-
-	if err != nil {
-		panic(err)
+func ParseFolder(folder string) (map[string]map[string]interface{}, error) {
+	result := map[string]map[string]interface{}{
+		"data":      {},
+		"resource":  {},
+		"module":    {},
+		"locals":    {},
+		"provider":  {},
+		"terraform": {},
+		"variable":  {},
 	}
 
-	var res strings.Builder
+	parser := hclparse.NewParser()
 
+	m, _ := filepath.Glob(folder + "/*.tf")
 	for _, file := range m {
-		dat, _ := os.ReadFile(file)
-		lines := strings.Split(string(dat), "\n")
+		tfFile, _ := parser.ParseHCLFile(file)
+		src, err := os.ReadFile(file)
 
-		for i, line := range lines {
-			if strings.HasPrefix(line, "terraform") {
-				res.WriteString(customParser(file, i+1) + "\n")
+		if err != nil {
+			return result, fmt.Errorf("failed to read %s: %s", file, err)
+		}
+
+		content, _, diags := tfFile.Body.PartialContent(&hcl.BodySchema{
+			Blocks: []hcl.BlockHeaderSchema{
+				{Type: "data", LabelNames: []string{"type", "name"}},
+				{Type: "resource", LabelNames: []string{"type", "name"}},
+				{Type: "module", LabelNames: []string{"name"}},
+				{Type: "locals"},
+				{Type: "provider", LabelNames: []string{"type"}},
+				{Type: "terraform"},
+				{Type: "variable", LabelNames: []string{"name"}},
+			},
+		})
+
+		if diags.HasErrors() {
+			slog.Debug(
+				"terraform.ParseFolder",
+				"diags", diags,
+			)
+		}
+
+		for _, block := range content.Blocks {
+			blockType := block.Type
+
+			switch blockType {
+			case "data", "resource":
+				blockKind := block.Labels[0]
+				blockName := block.Labels[1]
+
+				if result[blockType][blockKind] == nil {
+					result[blockType][blockKind] = make(map[string]string)
+				}
+
+				result[blockType][blockKind].(map[string]string)[blockName] = string(src[block.DefRange.Start.Byte:getClosingBrace(block.DefRange.End.Byte, src)+2]) + "\n"
+			case "provider":
+				blockName := block.Labels[0]
+				slog.Debug(
+					"ParseFolder",
+					"provider", block,
+				)
+				// Get alias if it exists as attribute
+				attributes, _ := block.Body.JustAttributes()
+				if alias, ok := attributes["alias"]; ok {
+					// Should always be static, so we just get the value and ignore diags
+					v, _ := alias.Expr.Value(nil)
+					blockName += v.AsString()
+				}
+				result[blockType][blockName] = string(src[block.DefRange.Start.Byte:getClosingBrace(block.DefRange.End.Byte, src)+2]) + "\n"
+			case "module":
+				blockName := block.Labels[0]
+				result[blockType][blockName] = string(src[block.DefRange.Start.Byte:getClosingBrace(block.DefRange.End.Byte, src)+2]) + "\n"
+			case "terraform":
+				result[blockType]["default"] = string(src[block.DefRange.Start.Byte:getClosingBrace(block.DefRange.End.Byte, src)+2]) + "\n"
+			case "locals":
+				attributes, _ := block.Body.JustAttributes()
+
+				for name, attr := range attributes {
+					result[blockType][name] = string(src[attr.Range.Start.Byte:attr.Range.End.Byte]) + "\n"
+				}
+			case "variable":
+				blockName := block.Labels[0]
+				result[blockType][blockName] = string(src[block.DefRange.Start.Byte:getClosingBrace(block.DefRange.End.Byte, src)+2]) + "\n"
+			default:
+				slog.Warn(
+					"ParseFolder",
+					"unsuported block type: %s", blockType,
+					"block", block,
+				)
+				continue
 			}
 		}
+
 	}
-	return res.String()
-}
 
-func OpenTerraformFiles(path string) *tfconfig.Module {
-	module, _ := tfconfig.LoadModule(path)
-	return module
-}
-
-func FromConfig(module *tfconfig.Module) map[string]map[string]string {
 	slog.Debug(
-		"FromConfig",
-		"module", fmt.Sprintf("%+v", module),
+		"terraform.ParseFolder",
+		"result", result,
 	)
-	hclCode := make(map[string]map[string]string)
-	for _, key := range KEYS {
-		hclCode[key] = make(map[string]string)
-	}
 
-	for _, item := range module.ManagedResources {
-		hclCode["resource"][fmt.Sprintf("%s.%s", item.Type, item.Name)] = customParser(item.Pos.Filename, item.Pos.Line)
-	}
-	for _, item := range module.DataResources {
-		hclCode["data"][fmt.Sprintf("%s.%s", item.Type, item.Name)] = customParser(item.Pos.Filename, item.Pos.Line)
-	}
-	for _, item := range module.ModuleCalls {
-		hclCode["module"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
-	}
-	for _, item := range module.Outputs {
-		hclCode["output"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
-	}
-	for _, item := range module.Variables {
-		hclCode["var"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
-	}
-	for _, item := range providerParser(module.Path) {
-		hclCode["provider"][item] = item
-	}
-	hclCode["terraform"]["root"] = terraformParser(module.Path)
-	return hclCode
-}
-
-func customParser(path string, pos int) string {
-	dat, _ := os.ReadFile(path)
-	lines := strings.Split(string(dat), "\n")
-	var sb strings.Builder
-
-	for i := pos - 1; i < len(lines); i++ {
-		// Variable can be declared in one line, break if we detect a new variable
-		if strings.HasPrefix(lines[i], "variable ") && pos != i+1 {
-			break
-		}
-		sb.WriteString(lines[i] + "\n")
-		if strings.HasPrefix(lines[i], "}") {
-			break
-		}
-	}
-	return sb.String()
+	return result, nil
 }

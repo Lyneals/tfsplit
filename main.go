@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 
 	"tfsplit/pkg/config"
 	"tfsplit/pkg/extractor"
@@ -51,11 +52,6 @@ func main() {
 				Name:  "var-file",
 				Usage: "Terraform plan var-file",
 			},
-			&cli.BoolFlag{
-				Name:  "import",
-				Usage: "Should we import resources to the new state ?",
-				Value: bool(true),
-			},
 		},
 		Name:   "tfsplit",
 		Usage:  "Read the Terraform module and split it into smaller layers based on the dependencies between the resources",
@@ -96,30 +92,22 @@ func appHandler(c *cli.Context) error {
 		return fmt.Errorf("Failed to load graph: %s", err)
 	}
 
-	res, err := terraform.ParseFolder(tfPath)
+	hclCode, err := terraform.ParseFolder(tfPath)
 
 	if err != nil {
-		slog.Debug(
-			"ParseError",
-			"res", res,
-		)
 		return fmt.Errorf("Failed to parse folder: %s", err)
 
 	}
-
-	return nil
-	module := terraform.OpenTerraformFiles(tfPath)
-	hclCode := terraform.FromConfig(module)
 
 	state, err := terraform.GetState(ctx, tfPath, "terraform", backendConfig)
 	if err != nil {
 		return fmt.Errorf("Failed to get state: %s", err)
 	}
 
-	// Build rootNodes list
-	var rootNodes []string
+	// Build usedNodes list
+	var usedNodes []string
 	for _, layer := range config.Layers {
-		rootNodes = append(rootNodes, layer.RootNode)
+		usedNodes = append(usedNodes, layer.RootNode)
 	}
 
 	// For each layer, get the children of the root node
@@ -127,7 +115,13 @@ func appHandler(c *cli.Context) error {
 	// write the layer
 	// write the vars
 	for _, layer := range config.Layers {
-		childs := graph.GetChildren(layer.RootNode, gograph, rootNodes)
+		childs := graph.GetChildren(layer.RootNode, gograph, usedNodes)
+		for _, child := range childs {
+			if strings.HasPrefix(child, "data") || strings.HasPrefix(child, "provider") || strings.HasPrefix(child, "local") || strings.HasPrefix(child, "var") {
+				continue
+			}
+			usedNodes = append(usedNodes, child)
+		}
 		ids := extractor.GetIds(layer.RootNode, state)
 
 		requiredNodes := append(childs, layer.RootNode)

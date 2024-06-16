@@ -35,11 +35,11 @@ func GetChildrenHelper(node string, graph *gographviz.Graph, visited map[string]
 	return removeDuplicateStr(children)
 }
 
-func GetChildren(node string, graph *gographviz.Graph, rootNodes []string) []string {
+func GetChildren(node string, graph *gographviz.Graph, usedNodes []string) []string {
 	visited := make(map[string]bool)
-	// Mark root nodes as visited
+	// Mark already used nodes as visited
 	// Will avoid discovering node that belong to another layer
-	for _, n := range rootNodes {
+	for _, n := range usedNodes {
 		if n == node {
 			continue
 		}

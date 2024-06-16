@@ -11,30 +11,29 @@ import (
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
-	"golang.org/x/exp/maps"
 )
 
 var (
 	mFileName = map[string]string{
-		"resource": "main.tf",
-		"module":   "main.tf",
-		"output":   "outputs.tf",
-		"var":      "variables.tf",
-		"provider": "providers.tf",
-		"local":    "locals.tf",
+		"resource":  "main.tf",
+		"module":    "main.tf",
+		"data":      "data.tf",
+		"terraform": "providers.tf",
+		"output":    "outputs.tf",
+		"variable":  "variables.tf",
+		"provider":  "providers.tf",
+		"locals":    "locals.tf",
 	}
-	kindKeys = [8]string{"data", "module", "output", "var", "provider", "resource", "provider", "local"}
+	kindKeys = [10]string{"data", "module", "output", "var", "provider", "resource", "provider", "locals", "terraform", "variable"}
 )
 
-func WriteLayer(path string, nodes []string, hcl map[string]map[string]string, layerName string) {
+func WriteLayer(path string, nodes []string, hcl map[string]map[string]interface{}, layerName string) {
+	basePath := filepath.Join(path, "tfsplit", layerName)
 	slog.Debug(
 		"WriteLayer",
-		"path", path,
+		"path", basePath,
 		"nodes", nodes,
-		"hcl", hcl,
 	)
-
-	basePath := filepath.Join(path, "tfsplit", layerName)
 
 	// If directory already exists, return
 	if _, err := os.Stat(basePath); !os.IsNotExist(err) {
@@ -56,54 +55,85 @@ func WriteLayer(path string, nodes []string, hcl map[string]map[string]string, l
 		m[kind] = &strings.Builder{}
 	}
 
-	seen := make(map[string]bool)
 	for _, node := range nodes {
-		if strings.HasPrefix(node, "provider") {
+
+		if strings.HasPrefix(node, "data.") {
+			k := strings.Split(node, ".")[0]
+			t := strings.Split(node, ".")[1]
+			name := strings.Join(strings.Split(node, ".")[2:], ".")
+
+			slog.Debug(
+				"Writing data",
+				"kind", k,
+				"type", t,
+				"name", name,
+			)
+
+			m[k].WriteString(hcl[k][t].(map[string]string)[name])
+		} else if strings.HasPrefix(node, "module.") || strings.HasPrefix(node, "output.") {
+			k := strings.Split(node, ".")[0]
+			name := strings.Split(node, ".")[1]
+
+			slog.Debug(
+				"Writing module/output/var",
+				"kind", k,
+				"name", name,
+			)
+
+			m[k].WriteString(hcl[k][name].(string))
+		} else if strings.HasPrefix(node, "var.") {
+			k := "variable"
+			name := strings.Split(node, ".")[1]
+
+			slog.Debug(
+				"Writing variable",
+				"kind", k,
+				"name", name,
+			)
+
+			m[k].WriteString(hcl[k][name].(string))
+		} else if strings.HasPrefix(node, "local.") {
+			k := "locals"
+			name := strings.Split(node, ".")[1]
+
+			slog.Debug(
+				"Writing local",
+				"kind", k,
+				"name", name,
+			)
+
+			m[k].WriteString(hcl[k][name].(string))
+		} else if strings.HasPrefix(node, "provider") {
 			continue
+		} else {
+			k := "resource"
+			t := strings.Split(node, ".")[0]
+			name := strings.Join(strings.Split(node, ".")[1:], ".")
+
+			slog.Debug(
+				"Writing resource",
+				"kind", k,
+				"type", t,
+				"name", name,
+			)
+
+			m[k].WriteString(hcl[k][t].(map[string]string)[name])
 		}
-
-		split := strings.Split(node, ".")
-		kind := split[0]
-		name := strings.Join(split[1:], ".")
-
-		if seen[kind+name] {
-			continue
-		}
-
-		slog.Debug(
-			"WriteLayer",
-			"kind", kind,
-			"name", name,
-		)
-
-		if kind == "local" {
-			continue
-		}
-
-		// Handle resources
-		if m[kind] == nil {
-			kind = "resource"
-			name = node
-		}
-
-		if hcl[kind][name] == "" {
-			panic(fmt.Errorf("Resource %s %s not found in HCL", kind, name))
-		}
-		m[kind].WriteString(hcl[kind][name] + "\n")
-		seen[kind+name] = true
 	}
-	m["provider"].WriteString(strings.Join(maps.Values(hcl["providers"]), "/n"))
 
-	slog.Debug(
-		"WriteLayer",
-		"m", m,
-	)
+	if m["locals"].Len() > 0 {
+		var newSb strings.Builder
+		newSb.WriteString(fmt.Sprintf(`locals {
+			%s
+		}`, m["locals"].String()))
+		m["locals"] = &newSb
+	}
 
 	for name, sb := range m {
-		os.WriteFile(filepath.Join(basePath, mFileName[name]), []byte(sb.String()), 0644)
+		f, _ := os.OpenFile(filepath.Join(basePath, mFileName[name]), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+		f.WriteString(sb.String())
+		f.Close()
 	}
-
-	os.WriteFile(filepath.Join(basePath, "terraform.tf"), []byte(hcl["terraform"]["root"]), 0644)
 }
 
 func WriteVars(path string, fileName string, nodes []string, imports map[string]string, layerName string) {
@@ -131,29 +161,29 @@ func WriteVars(path string, fileName string, nodes []string, imports map[string]
 		}
 	}
 
-	// Build imports map
-	importNeeded := make(map[string]bool)
-	for _, node := range nodes {
-		if strings.HasPrefix(node, "resource.") || strings.HasPrefix(node, "module.") {
-			importNeeded[node] = true
+	/*
+		// Build imports map
+		importNeeded := make(map[string]bool)
+		for _, node := range nodes {
+			if strings.HasPrefix(node, "resource.") || strings.HasPrefix(node, "module.") {
+				importNeeded[node] = true
+			}
 		}
-	}
-
-	// Get only the imports needed
-	mImports := make(map[string]cty.Value)
-	for k, v := range imports {
-		slog.Debug(
-			"Filter imports",
-			"key", k,
-		)
-		sp := strings.Split(k, ".")
-		t := sp[0]
-		n := strings.Split(sp[1], "[")[0]
-		if !importNeeded[t+"."+n] {
-			continue
-		}
-		mImports[k] = cty.StringVal(v)
-	}
+		// Get only the imports needed
+		mImports := make(map[string]cty.Value)
+		for k, v := range imports {
+			slog.Debug(
+				"Filter imports",
+				"key", k,
+			)
+			sp := strings.Split(k, ".")
+			t := sp[0]
+			n := strings.Split(sp[1], "[")[0]
+			if !importNeeded[t+"."+n] {
+				continue
+			}
+			mImports[k] = cty.StringVal(v)
+		}	*/
 
 	varsPath := filepath.Join(path, "tfsplit", layerName, fileName)
 	dir := filepath.Dir(varsPath)
