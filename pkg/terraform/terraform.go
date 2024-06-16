@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	KEYS = [7]string{"resources", "data", "modules", "outputs", "variables", "providers", "terraform"}
+	KEYS = [7]string{"resource", "data", "module", "output", "var", "provider", "terraform"}
 )
 
 func providerParser(path string) map[string]string {
@@ -77,22 +77,22 @@ func FromConfig(module *tfconfig.Module) map[string]map[string]string {
 	}
 
 	for _, item := range module.ManagedResources {
-		hclCode["resources"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
+		hclCode["resource"][fmt.Sprintf("%s.%s", item.Type, item.Name)] = customParser(item.Pos.Filename, item.Pos.Line)
 	}
 	for _, item := range module.DataResources {
-		hclCode["data"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
+		hclCode["data"][fmt.Sprintf("%s.%s", item.Type, item.Name)] = customParser(item.Pos.Filename, item.Pos.Line)
 	}
 	for _, item := range module.ModuleCalls {
-		hclCode["modules"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
+		hclCode["module"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
 	}
 	for _, item := range module.Outputs {
-		hclCode["outputs"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
+		hclCode["output"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
 	}
 	for _, item := range module.Variables {
-		hclCode["variables"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
+		hclCode["var"][item.Name] = customParser(item.Pos.Filename, item.Pos.Line)
 	}
 	for _, item := range providerParser(module.Path) {
-		hclCode["providers"][item] = item
+		hclCode["provider"][item] = item
 	}
 	hclCode["terraform"]["root"] = terraformParser(module.Path)
 	return hclCode
@@ -104,6 +104,10 @@ func customParser(path string, pos int) string {
 	var sb strings.Builder
 
 	for i := pos - 1; i < len(lines); i++ {
+		// Variable can be declared in one line, break if we detect a new variable
+		if strings.HasPrefix(lines[i], "variable ") && pos != i+1 {
+			break
+		}
 		sb.WriteString(lines[i] + "\n")
 		if strings.HasPrefix(lines[i], "}") {
 			break

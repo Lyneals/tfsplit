@@ -8,6 +8,7 @@ import (
 )
 
 func fixName(str string) string {
+
 	name := strings.Split(str, " ")[1]
 	// If the node name is a module, keep only the module named part
 	if strings.HasPrefix(name, "module.") {

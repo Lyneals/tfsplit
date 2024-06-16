@@ -9,13 +9,13 @@ import (
 	tfjson "github.com/hashicorp/terraform-json"
 )
 
-func GetState(ctx context.Context, path string, tfBin string) (*tfjson.State, error) {
+func GetState(ctx context.Context, path string, tfBin string, backendConfig string) (*tfjson.State, error) {
 	tf, err := tfexec.NewTerraform(path, tfBin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Terraform executor: %w", err)
 	}
 
-	err = tf.Init(ctx)
+	err = tf.Init(ctx, tfexec.BackendConfig(backendConfig))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize Terraform: %w", err)
 	}

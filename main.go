@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"slices"
 
 	"tfsplit/pkg/config"
 	"tfsplit/pkg/extractor"
@@ -95,10 +96,22 @@ func appHandler(c *cli.Context) error {
 		return fmt.Errorf("Failed to load graph: %s", err)
 	}
 
+	res, err := terraform.ParseFolder(tfPath)
+
+	if err != nil {
+		slog.Debug(
+			"ParseError",
+			"res", res,
+		)
+		return fmt.Errorf("Failed to parse folder: %s", err)
+
+	}
+
+	return nil
 	module := terraform.OpenTerraformFiles(tfPath)
 	hclCode := terraform.FromConfig(module)
 
-	state, err := terraform.GetState(ctx, tfPath, "terraform")
+	state, err := terraform.GetState(ctx, tfPath, "terraform", backendConfig)
 	if err != nil {
 		return fmt.Errorf("Failed to get state: %s", err)
 	}
@@ -117,17 +130,21 @@ func appHandler(c *cli.Context) error {
 		childs := graph.GetChildren(layer.RootNode, gograph, rootNodes)
 		ids := extractor.GetIds(layer.RootNode, state)
 
+		requiredNodes := append(childs, layer.RootNode)
+		slices.Sort(requiredNodes)
+
 		slog.Debug(
 			"Processing layer",
 			"layer", layer.Name,
 			"rootNode", layer.RootNode,
 			"ids", ids,
+			"childs", childs,
 		)
 
-		writer.WriteLayer(tfPath, childs, hclCode, layer.Name)
+		writer.WriteLayer(tfPath, requiredNodes, hclCode, layer.Name)
 
 		if varFile != "" {
-			writer.WriteVars(tfPath, varFile, childs, ids, layer.Name)
+			writer.WriteVars(tfPath, varFile, requiredNodes, ids, layer.Name)
 		}
 		if backendConfig != "" {
 			writer.WriteBackendConfig(tfPath, backendConfig, layer.Name)

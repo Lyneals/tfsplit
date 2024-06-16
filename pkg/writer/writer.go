@@ -14,6 +14,18 @@ import (
 	"golang.org/x/exp/maps"
 )
 
+var (
+	mFileName = map[string]string{
+		"resource": "main.tf",
+		"module":   "main.tf",
+		"output":   "outputs.tf",
+		"var":      "variables.tf",
+		"provider": "providers.tf",
+		"local":    "locals.tf",
+	}
+	kindKeys = [8]string{"data", "module", "output", "var", "provider", "resource", "provider", "local"}
+)
+
 func WriteLayer(path string, nodes []string, hcl map[string]map[string]string, layerName string) {
 	slog.Debug(
 		"WriteLayer",
@@ -39,57 +51,56 @@ func WriteLayer(path string, nodes []string, hcl map[string]map[string]string, l
 		panic(err)
 	}
 
-	var main strings.Builder
-	var data strings.Builder
-	var variables strings.Builder
-	var outputs strings.Builder
-	var providers strings.Builder
+	m := make(map[string]*strings.Builder)
+	for _, kind := range kindKeys {
+		m[kind] = &strings.Builder{}
+	}
 
+	seen := make(map[string]bool)
 	for _, node := range nodes {
-		if strings.HasPrefix(node, "module.") {
-			name, _ := strings.CutPrefix(node, "module.")
-			main.WriteString(hcl["modules"][name] + "\n")
-		}
-		if strings.HasPrefix(node, "resource.") {
-			name, _ := strings.CutPrefix(node, "resource.")
-			main.WriteString(hcl["resources"][name] + "\n")
-		}
-		if strings.HasPrefix(node, "data.") {
-			name, _ := strings.CutPrefix(node, "data.")
-			data.WriteString(hcl["data"][name] + "\n")
-		}
-		if strings.HasPrefix(node, "var.") {
-			name, _ := strings.CutPrefix(node, "var.")
-			variables.WriteString(hcl["variables"][name] + "\n")
-		}
-		if strings.HasPrefix(node, "output.") {
-			name, _ := strings.CutPrefix(node, "output.")
-			outputs.WriteString(hcl["outputs"][name] + "\n")
-		}
-		/* Don't handle providers for now, alias make it difficult
 		if strings.HasPrefix(node, "provider") {
-			name, _ := strings.CutPrefix(node, "provider.")
-			providers.WriteString(hcl["providers"][name] + "\n")
+			continue
 		}
-		*/
-	}
 
-	providers.WriteString(strings.Join(maps.Values(hcl["providers"]), "/n"))
+		split := strings.Split(node, ".")
+		kind := split[0]
+		name := strings.Join(split[1:], ".")
 
-	if main.Len() != 0 {
-		os.WriteFile(filepath.Join(basePath, "main.tf"), []byte(main.String()), 0644)
+		if seen[kind+name] {
+			continue
+		}
+
+		slog.Debug(
+			"WriteLayer",
+			"kind", kind,
+			"name", name,
+		)
+
+		if kind == "local" {
+			continue
+		}
+
+		// Handle resources
+		if m[kind] == nil {
+			kind = "resource"
+			name = node
+		}
+
+		if hcl[kind][name] == "" {
+			panic(fmt.Errorf("Resource %s %s not found in HCL", kind, name))
+		}
+		m[kind].WriteString(hcl[kind][name] + "\n")
+		seen[kind+name] = true
 	}
-	if data.Len() != 0 {
-		os.WriteFile(filepath.Join(basePath, "data.tf"), []byte(data.String()), 0644)
-	}
-	if variables.Len() != 0 {
-		os.WriteFile(filepath.Join(basePath, "variables.tf"), []byte(variables.String()), 0644)
-	}
-	if outputs.Len() != 0 {
-		os.WriteFile(filepath.Join(basePath, "outputs.tf"), []byte(outputs.String()), 0644)
-	}
-	if providers.Len() != 0 {
-		os.WriteFile(filepath.Join(basePath, "providers.tf"), []byte(providers.String()), 0644)
+	m["provider"].WriteString(strings.Join(maps.Values(hcl["providers"]), "/n"))
+
+	slog.Debug(
+		"WriteLayer",
+		"m", m,
+	)
+
+	for name, sb := range m {
+		os.WriteFile(filepath.Join(basePath, mFileName[name]), []byte(sb.String()), 0644)
 	}
 
 	os.WriteFile(filepath.Join(basePath, "terraform.tf"), []byte(hcl["terraform"]["root"]), 0644)
