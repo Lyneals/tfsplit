@@ -104,7 +104,23 @@ func WriteLayer(path string, nodes []string, hcl map[string]map[string]interface
 
 			m[k].WriteString(hcl[k][name].(string))
 		} else if strings.HasPrefix(node, "provider") {
-			continue
+			k := "provider"
+			t := strings.Split(node, ".")[1]
+
+			slog.Debug(
+				"Writing provider",
+				"type", t,
+			)
+
+			if hcl[k][t] == nil {
+				slog.Info(
+					"WriteLayer.provider",
+					"provider", t,
+					"message", "provider not found - can be ignored if provider doesn't require configuration",
+				)
+				continue
+			}
+			m[k].WriteString(hcl[k][t].(string))
 		} else {
 			k := "resource"
 			t := strings.Split(node, ".")[0]

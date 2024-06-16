@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/awalterschulze/gographviz"
@@ -14,9 +15,32 @@ func fixName(str string) string {
 	if strings.HasPrefix(name, "module.") {
 		name = "module." + strings.Split(name, ".")[1]
 	}
+
+	if strings.HasPrefix(name, "provider") {
+		name, _ = strings.CutPrefix(name, "provider[\\\"registry.terraform.io/hashicorp/")
+		kind := strings.Split(name, "\\")[0]
+
+		if strings.HasSuffix(name, "\"") {
+			name = name[:len(name)-1]
+		}
+
+		if strings.HasSuffix(name, "]") {
+			name = "provider." + kind
+		} else {
+			spl := strings.Split(name, ".")
+			alias := spl[len(spl)-1]
+			name = "provider." + kind + alias
+		}
+		slog.Debug(
+			"fixName.provider",
+			"node", name,
+		)
+	}
+
 	if strings.HasSuffix(name, "\"") {
 		name = name[:len(name)-1]
 	}
+
 	return fmt.Sprintf("%s", name)
 }
 
