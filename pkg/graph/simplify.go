@@ -2,7 +2,6 @@ package graph
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/awalterschulze/gographviz"
@@ -31,10 +30,6 @@ func fixName(str string) string {
 			alias := spl[len(spl)-1]
 			name = "provider." + kind + alias
 		}
-		slog.Debug(
-			"fixName.provider",
-			"node", name,
-		)
 	}
 
 	if strings.HasSuffix(name, "\"") {
@@ -94,4 +89,20 @@ func LoadGraph(graph string) (*gographviz.Graph, error) {
 	}
 
 	return reworkGraph(gograph), nil
+}
+
+func GetOrphans(graph *gographviz.Graph, used []string) []string {
+	var orphans []string
+	seen := make(map[string]bool)
+
+	for _, node := range used {
+		seen[node] = true
+	}
+
+	for _, node := range graph.Nodes.Nodes {
+		if seen[node.Name] == false {
+			orphans = append(orphans, node.Name)
+		}
+	}
+	return orphans
 }

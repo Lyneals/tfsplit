@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"tfsplit/pkg/config"
-	"tfsplit/pkg/extractor"
 	"tfsplit/pkg/graph"
 	"tfsplit/pkg/logger"
 	"tfsplit/pkg/terraform"
@@ -69,13 +68,13 @@ func appHandler(c *cli.Context) error {
 	ctx := context.Background()
 
 	config_path := c.String("config")
-	config, err := config.LoadConfig(config_path)
+	cfg, err := config.LoadConfig(config_path)
 	if err != nil {
 		return fmt.Errorf("Failed to load config: %s", err)
 	}
 	slog.Debug(
 		"Config loaded",
-		"config", config,
+		"config", cfg,
 	)
 
 	tfPath := c.String("path")
@@ -99,22 +98,20 @@ func appHandler(c *cli.Context) error {
 
 	}
 
-	state, err := terraform.GetState(ctx, tfPath, "terraform", backendConfig)
-	if err != nil {
-		return fmt.Errorf("Failed to get state: %s", err)
-	}
-
 	// Build usedNodes list
 	var usedNodes []string
-	for _, layer := range config.Layers {
-		usedNodes = append(usedNodes, layer.RootNode)
-	}
+
+	// Orphans layers should collect all resources that are not in any other layer
+	cfg.Layers = append(cfg.Layers, config.Layer{
+		Name:     "orphans",
+		RootNode: "root",
+	})
 
 	// For each layer, get the children of the root node
 	// extract the ids of the resources
 	// write the layer
 	// write the vars
-	for _, layer := range config.Layers {
+	for _, layer := range cfg.Layers {
 		childs := graph.GetChildren(layer.RootNode, gograph, usedNodes)
 		for _, child := range childs {
 			if strings.HasPrefix(child, "data") || strings.HasPrefix(child, "provider") || strings.HasPrefix(child, "local") || strings.HasPrefix(child, "var") {
@@ -122,7 +119,6 @@ func appHandler(c *cli.Context) error {
 			}
 			usedNodes = append(usedNodes, child)
 		}
-		ids := extractor.GetIds(layer.RootNode, state)
 
 		requiredNodes := append(childs, layer.RootNode)
 		slices.Sort(requiredNodes)
@@ -131,19 +127,17 @@ func appHandler(c *cli.Context) error {
 			"Processing layer",
 			"layer", layer.Name,
 			"rootNode", layer.RootNode,
-			"ids", ids,
 			"childs", childs,
 		)
 
 		writer.WriteLayer(tfPath, requiredNodes, hclCode, layer.Name)
 
 		if varFile != "" {
-			writer.WriteVars(tfPath, varFile, requiredNodes, ids, layer.Name)
+			writer.WriteVars(tfPath, varFile, requiredNodes, layer.Name)
 		}
 		if backendConfig != "" {
 			writer.WriteBackendConfig(tfPath, backendConfig, layer.Name)
 		}
 	}
-
 	return nil
 }

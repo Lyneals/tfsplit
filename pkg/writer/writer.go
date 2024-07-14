@@ -126,6 +126,10 @@ func WriteLayer(path string, nodes []string, hcl map[string]map[string]interface
 			t := strings.Split(node, ".")[0]
 			name := strings.Join(strings.Split(node, ".")[1:], ".")
 
+			if t == "root" && name == "" {
+				continue
+			}
+
 			slog.Debug(
 				"Writing resource",
 				"kind", k,
@@ -152,7 +156,7 @@ func WriteLayer(path string, nodes []string, hcl map[string]map[string]interface
 	}
 }
 
-func WriteVars(path string, fileName string, nodes []string, imports map[string]string, layerName string) {
+func WriteVars(path string, fileName string, nodes []string, layerName string) {
 	vars, err := terraform.ReadTfvars(filepath.Join(path, fileName))
 	if err != nil {
 		panic(fmt.Errorf("Failed to read var file: %s", err))
@@ -176,30 +180,6 @@ func WriteVars(path string, fileName string, nodes []string, imports map[string]
 			rootBody.SetAttributeValue(name, vars[name])
 		}
 	}
-
-	/*
-		// Build imports map
-		importNeeded := make(map[string]bool)
-		for _, node := range nodes {
-			if strings.HasPrefix(node, "resource.") || strings.HasPrefix(node, "module.") {
-				importNeeded[node] = true
-			}
-		}
-		// Get only the imports needed
-		mImports := make(map[string]cty.Value)
-		for k, v := range imports {
-			slog.Debug(
-				"Filter imports",
-				"key", k,
-			)
-			sp := strings.Split(k, ".")
-			t := sp[0]
-			n := strings.Split(sp[1], "[")[0]
-			if !importNeeded[t+"."+n] {
-				continue
-			}
-			mImports[k] = cty.StringVal(v)
-		}	*/
 
 	varsPath := filepath.Join(path, "tfsplit", layerName, fileName)
 	dir := filepath.Dir(varsPath)
